@@ -482,6 +482,9 @@ struct hid_device_info  HID_API_EXPORT *hid_enumerate(unsigned short vendor_id, 
 
 			/* Release Number */
 			cur_dev->release_number = get_int_property(dev, CFSTR(kIOHIDVersionNumberKey));
+			
+			/* store the current IOHIDDeviceRef */
+			cur_dev->dev_ref = dev;
 
 			/* We can only retrieve the interface number for USB HID devices.
 			 * IOKit always seems to return 0 when querying a standard USB device
@@ -521,6 +524,7 @@ hid_device * HID_API_EXPORT hid_open(unsigned short vendor_id, unsigned short pr
 	/* This function is identical to the Linux version. Platform independent. */
 	struct hid_device_info *devs, *cur_dev;
 	const char *path_to_open = NULL;
+	IOHIDDeviceRef dev_to_open = NULL;
 	hid_device * handle = NULL;
 
 	devs = hid_enumerate(vendor_id, product_id);
@@ -531,10 +535,16 @@ hid_device * HID_API_EXPORT hid_open(unsigned short vendor_id, unsigned short pr
 			if (serial_number) {
 				if (wcscmp(serial_number, cur_dev->serial_number) == 0) {
 					path_to_open = cur_dev->path;
+					// when there is a serial number, use the reference instead of the path
+					dev_to_open = cur_dev->dev_ref;
 					break;
+				}
+				else {
+					// serial number doesn't match, keep iterating
 				}
 			}
 			else {
+				// there was no serial number argument, open by path
 				path_to_open = cur_dev->path;
 				break;
 			}
@@ -543,8 +553,11 @@ hid_device * HID_API_EXPORT hid_open(unsigned short vendor_id, unsigned short pr
 	}
 
 	if (path_to_open) {
-		/* Open the device */
+		/* Open the device using the path*/
 		handle = hid_open_path(path_to_open);
+	}
+	else if (dev_to_open) {
+		handle = hid_open_ref(dev_to_open);
 	}
 
 	hid_free_enumeration(devs);
@@ -760,6 +773,76 @@ return_error:
 	free_hid_device(dev);
 	return NULL;
 }
+
+/* hid_open_ref()
+ *
+ * ref must be a valid IOHIDDeviceRef
+ */
+hid_device * HID_API_EXPORT hid_open_ref(const unsigned long long dev_ref)
+{
+	hid_device *dev = NULL;
+	//io_registry_entry_t entry = MACH_PORT_NULL;
+	IOReturn ret = kIOReturnInvalid;
+	
+	/* Set up the HID Manager if it hasn't been done */
+	if (hid_init() < 0)
+		goto return_error;
+	
+	dev = new_hid_device();
+	
+	io_object_t iokit_dev = hidapi_IOHIDDeviceGetService(dev_ref);
+	/* Create an IOHIDDevice for the entry */
+	dev->device_handle = IOHIDDeviceCreate(kCFAllocatorDefault, iokit_dev);
+	if (dev->device_handle == NULL) {
+		/* Error creating the HID device */
+		goto return_error;
+	}
+	
+	/* Open the IOHIDDevice */
+	ret = IOHIDDeviceOpen(dev->device_handle, kIOHIDOptionsTypeSeizeDevice);
+	if (ret == kIOReturnSuccess) {
+		char str[32];
+		
+		/* Create the buffers for receiving data */
+		dev->max_input_report_len = (CFIndex) get_max_report_length(dev->device_handle);
+		dev->input_report_buf = (uint8_t*) calloc(dev->max_input_report_len, sizeof(uint8_t));
+		
+		/* Create the Run Loop Mode for this device.
+		 printing the reference seems to work. */
+		sprintf(str, "HIDAPI_%p", dev->device_handle);
+		dev->run_loop_mode =
+		CFStringCreateWithCString(NULL, str, kCFStringEncodingASCII);
+		
+		/* Attach the device to a Run Loop */
+		IOHIDDeviceRegisterInputReportCallback(
+											   dev->device_handle, dev->input_report_buf, dev->max_input_report_len,
+											   &hid_report_callback, dev);
+		IOHIDDeviceRegisterRemovalCallback(dev->device_handle, hid_device_removal_callback, dev);
+		
+		/* Start the read thread */
+		pthread_create(&dev->thread, NULL, read_thread, dev);
+		
+		/* Wait here for the read thread to be initialized. */
+		pthread_barrier_wait(&dev->barrier);
+		
+		//IOObjectRelease(entry);
+		return dev;
+	}
+	else {
+		goto return_error;
+	}
+	
+return_error:
+	if (dev->device_handle != NULL)
+		CFRelease(dev->device_handle);
+	
+	//if (entry != MACH_PORT_NULL)
+	//   IOObjectRelease(entry);
+	
+	free_hid_device(dev);
+	return NULL;
+}
+
 
 static int set_report(hid_device *dev, IOHIDReportType type, const unsigned char *data, size_t length)
 {

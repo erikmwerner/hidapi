@@ -77,6 +77,11 @@ extern "C" {
 				* Valid on the Mac implementation if and only if the device
 				  is a USB HID device. */
 			int interface_number;
+			
+			/** Store an IOHIDDeviceRef to open device
+			 by reference (Mac only).*/
+			unsigned long long dev_ref;
+
 
 			/** Pointer to the next device */
 			struct hid_device_info *next;
@@ -181,6 +186,21 @@ extern "C" {
 				success or NULL on failure.
 		*/
 		HID_API_EXPORT hid_device * HID_API_CALL hid_open_path(const char *path);
+	
+		/** @brief Open a HID device by reference
+		 
+		 The reference is determined by calling hid_enumerate().
+		 
+		 This function sets the return value of hid_error().
+		 
+		 @ingroup API
+		 @param dev_ref an IOHIDDeviceRef to the device being opened
+		 
+		 @returns
+		 This function returns a pointer to a #hid_device object on
+		 success or NULL on failure.
+		 */
+		HID_API_EXPORT hid_device * HID_API_CALL hid_open_ref(const unsigned long long dev_ref);
 
 		/** @brief Write an Output report to a HID device.
 
